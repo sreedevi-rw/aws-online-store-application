@@ -1,0 +1,69 @@
+{
+  "Comment": "Complete order",
+  "StartAt": "CheckOrderStatus",
+  "States": {
+    "CheckOrderStatus": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.status",
+          "StringEquals": "Completed",
+          "Next": "UpdatePickupDetails"
+        },
+        {
+          "Variable": "$.status",
+          "StringEquals": "Cancelled",
+          "Next": "AddPickupUpDetailsPass"
+        }
+      ]
+    },
+    "AddPickupUpDetailsPass" : {
+      "Type" : "Pass",
+      "Parameters" : {
+        "input.$": "$",
+        "input.pickupDetails" : ""
+      },
+      "OutputPath" : "$.input",
+      "Next": "UpdateOrderStatus"
+    },
+    "UpdatePickupDetails": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:update-pickup-details",
+      "Next": "UpdateOrderStatus",
+      "ResultPath": "$.pickupDetails"
+    },
+    "UpdateOrderStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:update-order-status",
+      "ResultPath": "$.orderStatus",
+      "Next": "GetOrderDetails"
+    },
+    "GetOrderDetails": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:get-order-details",
+      "Next": "SendMail"
+    },
+    "SendMail": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sqs:sendMessage",
+      "Parameters": {
+        "QueueUrl": "https://sqs.us-east-1.amazonaws.com/660513063151/MailQueue",
+        "MessageBody": {
+          "emailSubject": "Order has been updated",
+          "emailBody.$": "$.orderDetails",
+          "toAddress.$": "States.Array($.customerEmailId)"
+        }
+      },
+      "ResultPath": null,
+      "Next": "CompleteOrderResponse"
+    },
+    "CompleteOrderResponse": {
+      "Type": "Pass",
+      "Parameters": {
+        "result.$": "$.orderDetails",
+        "isEnd": true
+      },
+      "End": true
+    }
+  }
+}

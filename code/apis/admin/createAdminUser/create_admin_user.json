@@ -1,0 +1,32 @@
+{
+  "Comment": "Create admin user API",
+  "StartAt": "CreateCognitoUser",
+  "States": {
+    "CreateCognitoUser": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:create-cognito-user",
+      "ResultPath": "$.create_user",
+      "Next": "AddToAdminCognitoGroup"
+    },
+    "AddToAdminCognitoGroup": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:add-to-cognito-group",
+      "ResultPath": "$.add_to_admin_group",
+      "Next": "AddSESIdentity"
+    },
+    "AddSESIdentity": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:add-user-as-ses-identity",
+      "ResultPath": "$.add_ses_identity",
+      "Next": "CreateAdminUserResponse"
+    },
+    "CreateAdminUserResponse": {
+      "Type": "Pass",
+      "Parameters": {
+        "result": "Created user successfully",
+        "isEnd": true
+      },
+      "End": true
+    }
+  }
+}

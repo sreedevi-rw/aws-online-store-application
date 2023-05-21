@@ -1,0 +1,67 @@
+{
+  "Comment": "Add product API",
+  "StartAt": "CheckIfProductExists",
+  "States": {
+    "CheckIfProductExists": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:check-if-product-exists",
+      "Next": "AlreadyExists?"
+    },
+    "AlreadyExists?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.productExists",
+          "BooleanEquals": false,
+          "Next": "AddProduct"
+        },
+        {
+          "Variable": "$.productExists",
+          "BooleanEquals": true,
+          "Next": "ProductAlreadyExistError"
+        }
+      ]
+    },
+    "AddProduct": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:add-product-to-db",
+      "Next": "GetAdmins"
+    },
+    "GetAdmins": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:get-admin-mail-addresses",
+      "Next": "NotifyAdmins"
+    },
+    "NotifyAdmins":{
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sqs:sendMessage",
+      "Parameters": {
+        "QueueUrl": "https://sqs.us-east-1.amazonaws.com/660513063151/MailQueue",
+        "MessageBody":{
+          "emailSubject.$":"$.msg",
+          "emailBody.$":"$.addedRow",
+          "toAddress.$":"$.adminEmailIds"
+        }
+      },
+      "ResultPath": null,
+      "Next": "AddProductResponse"
+    },
+    "AddProductResponse": {
+      "Type": "Pass",
+      "Parameters": {
+        "result.$": "$.msg",
+        "addedRow.$": "$.addedRow",
+        "isEnd": true
+      },
+      "End": true
+    },
+    "ProductAlreadyExistError": {
+      "Type": "Pass",
+      "Parameters": {
+        "result": "Product already exists",
+        "isEnd": true
+      },
+      "End": true
+    }
+  }
+}

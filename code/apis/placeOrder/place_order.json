@@ -1,0 +1,143 @@
+{
+  "Comment": "Place order API",
+  "StartAt": "CheckAllProductAvailability",
+  "States": {
+    "CheckAllProductAvailability": {
+      "Type": "Map",
+      "InputPath": "$",
+      "ItemProcessor": {
+        "StartAt": "CheckProductAvailablability",
+        "States": {
+          "CheckProductAvailablability": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:us-east-1:660513063151:function:check-product-availability",
+            "End" : true
+          }
+        }
+      },
+      "ResultPath": "$.exists",
+      "ItemsPath": "$.products",
+      "Next" : "PassAvailability"
+    },
+    "PassAvailability": {
+      "Type": "Pass",
+      "Parameters": {
+        "input.$": "$",
+        "AllProductsNotAvailable.$": "States.ArrayContains($.exists, false)"
+      },
+      "Next": "AllProductsAvailable?"
+    },
+    "AllProductsAvailable?" : {
+      "Type" : "Choice",
+      "Choices" : [
+        {
+          "Variable": "$.AllProductsNotAvailable",
+          "BooleanEquals": true,
+          "Next": "ProductNoAvailableError"
+        },
+        {
+          "Variable": "$.AllProductsNotAvailable",
+          "BooleanEquals": false,
+          "Next": "PlaceOrder"
+        }
+      ],
+      "OutputPath": "$.input"
+    },
+    "PlaceOrder" : {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:place-order",
+      "ResultPath" : "$.orderId",
+      "Next" : "CreateProductMapping"
+    },
+    "CreateProductMapping" : {
+      "Type": "Map",
+      "InputPath": "$",
+      "ItemSelector": {
+        "orderId.$": "$.orderId",
+        "product.$": "$$.Map.Item.Value"
+      },
+      "ItemProcessor": {
+        "StartAt": "CreateProductMappingInDB",
+        "States": {
+          "CreateProductMappingInDB": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:us-east-1:660513063151:function:create-product-mapping",
+            "End" : true
+          }
+        }
+      },
+      "ResultPath": "$.result",
+      "ItemsPath": "$.products",
+      "Next" : "PassResult"
+    },
+    "PassResult": {
+      "Type": "Pass",
+      "Parameters": {
+        "input.$": "$",
+        "AllProductsNotMapped.$": "States.ArrayContains($.exists, false)"
+      },
+      "Next": "AllProductsMapped?"
+    },
+    "AllProductsMapped?" : {
+      "Type" : "Choice",
+      "Choices" : [
+        {
+          "Variable": "$.AllProductsNotMapped",
+          "BooleanEquals": true,
+          "Next": "OrderCreationFailed"
+        },
+        {
+          "Variable": "$.AllProductsNotMapped",
+          "BooleanEquals": false,
+          "Next": "GetOrderDetails"
+        }
+      ],
+      "OutputPath": "$.input"
+    },
+    "GetOrderDetails" : {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:get-order-details",
+      "Next": "SendMail"
+    },
+    "SendMail":{
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sqs:sendMessage",
+      "Parameters": {
+        "QueueUrl": "https://sqs.us-east-1.amazonaws.com/660513063151/MailQueue",
+        "MessageBody":{
+          "emailSubject":"Order placed successfully",
+          "emailBody.$": "$.orderDetails",
+          "toAddress.$":"States.Array($.customerEmailId)"
+        }
+      },
+      "ResultPath": null,
+      "Next": "PlaceOrderResponse"
+    },
+    "PlaceOrderResponse": {
+      "Type": "Pass",
+      "Parameters": {
+        "input.$": "$",
+        "isEnd": true
+      },
+      "End": true
+    },
+    "ProductNoAvailableError": {
+      "Type": "Pass",
+      "Parameters": {
+        "input.$": "$",
+        "result": "One or more products chosen were not available for the quantity of the oder.",
+        "isEnd": true
+      },
+      "End": true
+    },
+    "OrderCreationFailed": {
+      "Type": "Pass",
+      "Parameters": {
+        "input.$": "$",
+        "result": "One or more products in the order failed to be placed",
+        "isEnd": true
+      },
+      "End": true
+    }
+  }
+}

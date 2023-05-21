@@ -1,0 +1,87 @@
+{
+  "Comment": "Update product API",
+  "StartAt": "CheckIfProductExists",
+  "States": {
+    "CheckIfProductExists": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:check-if-product-id-exists",
+      "Next": "Exists?"
+    },
+    "Exists?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.productExists",
+          "BooleanEquals": false,
+          "Next": "ProductDoesNotExistError"
+        },
+        {
+          "Variable": "$.productExists",
+          "BooleanEquals": true,
+          "Next": "CheckUpdateType"
+        }
+      ]
+    },
+    "CheckUpdateType": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.type",
+          "StringEquals": "count",
+          "Next": "UpdateProductCount"
+        },
+        {
+          "Variable": "$.type",
+          "StringEquals": "price",
+          "Next": "UpdateProductPrice"
+        }
+      ]
+    },
+    "UpdateProductPrice": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:update-product-price",
+      "Next": "GetAdmins"
+    },
+    "UpdateProductCount": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:update-product-count",
+      "Next": "GetAdmins"
+    },
+    "GetAdmins": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:660513063151:function:get-admin-mail-addresses",
+      "Next": "NotifyAdmins"
+    },
+    "NotifyAdmins":{
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sqs:sendMessage",
+      "Parameters": {
+        "QueueUrl": "https://sqs.us-east-1.amazonaws.com/660513063151/MailQueue",
+        "MessageBody":{
+          "emailSubject.$":"$.msg",
+          "emailBody.$":"$.updatedRow",
+          "toAddress.$":"$.adminEmailIds"
+        }
+      },
+      "ResultPath": null,
+      "Next": "UpdateProductResponse"
+    },
+    "UpdateProductResponse": {
+      "Type": "Pass",
+      "Parameters": {
+        "result.$": "$.msg",
+        "updatedRow.$": "$.updatedRow",
+        "isEnd": true
+      },
+      "End": true
+    },
+    "ProductDoesNotExistError": {
+      "Type": "Pass",
+      "Parameters": {
+        "result": "Product does not exists. Please enter a valid product.",
+        "isEnd": true
+      },
+      "End": true
+    }
+  }
+}

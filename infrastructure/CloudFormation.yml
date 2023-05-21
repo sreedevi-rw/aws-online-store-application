@@ -1,0 +1,1997 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  DefaultAdminEmailAddress:
+    Type: String
+    Description: Enter the email address of the default admin user account
+  DefaultAdminPreferredUsername:
+    Type: String
+    Description: Enter the preferred name of the default admin user account
+  DefaultAdminUsername:
+    Type: String
+    Description: Enter the preferred name of the default admin user account
+  EmailNotifcationsFromAddress:
+    Type: String
+    Description: Enter the email address from which the product related emails has to be sent. Please verify the email address to get email notifications.
+
+Resources:
+
+  #  ------------------------------- Secrets Manager ----------------------------------
+
+  # /***************************************************************************************
+  #  * AWS Cloudformation Documentation *
+  #  * Referred from :  AWS Cloudformation - Secrets Manager Secrets *
+  #  * Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-secretsmanager-secret.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  StorageManagementMySQLCredentials:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: StorageManagementMySQLCredentials
+      GenerateSecretString:
+        RequireEachIncludedType: True
+        SecretStringTemplate: '{"username": "root"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 30
+        ExcludeCharacters: '"@/\'
+
+  # /***************************************************************************************
+  #  * AWS Cloudformation Documentation *
+  #  * Referred from :  AWS Cloudformation - Secret Manager Database Attachment *
+  #  * Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-secretsmanager-secret.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  MySQLCredentialsInstanceAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref StorageManagementMySQLCredentials
+      TargetId: !Ref StorageManagementMySQLDBInstance
+      TargetType: AWS::RDS::DBInstance
+
+  #  ------------------------------- Secrets Manager Ends ----------------------------------
+
+  #  ------------------------------- RDS ----------------------------------
+
+  # /***************************************************************************************
+  #  * AWS Cloudformation Documentation *
+  #  * Referred from :  AWS Cloudformation - RDS DB Instance *
+  #  * Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-dbinstance.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  StorageManagementMySQLDBInstance:
+    Type: AWS::RDS::DBInstance
+    DependsOn:
+      - StorageManagementMySQLCredentials
+    Properties:
+      AllocatedStorage: 10
+      DBInstanceClass: db.t2.micro
+      Engine: mysql
+      MasterUsername: !Join [ '', [ '{{resolve:secretsmanager:', !Ref StorageManagementMySQLCredentials, ':SecretString:username}}' ] ]
+      MasterUserPassword: !Join [ '', [ '{{resolve:secretsmanager:', !Ref StorageManagementMySQLCredentials, ':SecretString:password}}' ] ]
+      DBInstanceIdentifier: 'store-management-rds-instance'
+      DBSubnetGroupName: !Ref StoreManagementDBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RdsSecurityGroup
+
+  #  ------------------------------- RDS Ends----------------------------------
+
+  #  ------------------------------- VPC ----------------------------------
+
+  # /***************************************************************************************
+  #  * Cloudformation VPC template *
+  #  * Adapted from :  AWS CodeBuild - AWS CloudFormation VPC template *
+  #  * Modified it : to add lambda security group to the RDS security group and *
+  #  * Modified it : created a subnet group, that consists of the 2 private subnets, to attach to RDS *
+  #  * Availability: https://docs.aws.amazon.com/codebuild/latest/userguide/cloudformation-vpc-template.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  StoreManagementVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: "10.0.0.0/16"
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  StoreManagementPrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs
+          Ref: "AWS::Region"
+      VpcId: !Ref StoreManagementVPC
+      CidrBlock: "10.0.0.0/24"
+
+  StoreManagementPrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs
+          Ref: "AWS::Region"
+      VpcId: !Ref StoreManagementVPC
+      CidrBlock: "10.0.1.0/24"
+
+  StoreManagementDBSubnetGroup :
+    Type : AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: group
+      SubnetIds:
+        - !Ref StoreManagementPrivateSubnet1
+        - !Ref StoreManagementPrivateSubnet2
+        
+  StoreManagementInternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  StoreManagementInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref StoreManagementInternetGateway
+      VpcId: !Ref StoreManagementVPC
+
+  StoreManagementPublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref StoreManagementVPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: "10.0.3.0/24"
+      MapPublicIpOnLaunch: true
+
+  StoreManagementPublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref StoreManagementVPC
+      AvailabilityZone: !Select [ 1, !GetAZs  '' ]
+      CidrBlock: "10.0.4.0/24"
+      MapPublicIpOnLaunch: true
+
+  StorageManagementNatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: StoreManagementInternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  StorageManagementNatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: StoreManagementInternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  StorageManagementNatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt StorageManagementNatGateway1EIP.AllocationId
+      SubnetId: !Ref StoreManagementPublicSubnet1
+
+  StorageManagementNatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt StorageManagementNatGateway2EIP.AllocationId
+      SubnetId: !Ref StoreManagementPublicSubnet2
+
+  StorageManagementPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref StoreManagementVPC
+
+  StorageManagementDefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: StoreManagementInternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref StorageManagementPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref StoreManagementInternetGateway
+
+  StoreManagementPublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref StorageManagementPublicRouteTable
+      SubnetId: !Ref StoreManagementPublicSubnet1
+
+  StoreManagementPublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref StorageManagementPublicRouteTable
+      SubnetId: !Ref StoreManagementPublicSubnet2
+
+  StorageManagementPrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref StoreManagementVPC
+
+  StorageManagementDefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref StorageManagementPrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref StorageManagementNatGateway1
+
+  StoreManagementPrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref StorageManagementPrivateRouteTable1
+      SubnetId: !Ref StoreManagementPrivateSubnet1
+
+  StorageManagementPrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref StoreManagementVPC
+
+  StorageManagementDefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref StorageManagementPrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref StorageManagementNatGateway2
+
+  StoreManagementPrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref StorageManagementPrivateRouteTable2
+      SubnetId: !Ref StoreManagementPrivateSubnet2
+
+  ConnectToRDSLambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Only outbound traffic is allowed
+      VpcId: !Ref StoreManagementVPC
+
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Only lambda is allowed to connect
+      VpcId: !Ref StoreManagementVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          SourceSecurityGroupId: !Ref ConnectToRDSLambdaSecurityGroup
+          FromPort: 0
+          ToPort: 3306
+
+  #  ------------------------------- VPC Ends----------------------------------
+
+  #  ------------------------------- Cognito ----------------------------------
+
+  # /***************************************************************************************
+  #  * AWS Cloudformation Documentation *
+  #  * Referred from :  AWS Cloudformation - AWS Cognito *
+  #  * Referred docs for :  AWS Cloudformation - AWS::Cognito::UserPool *
+  #  * Referred docs for :  AWS Cloudformation - AWS::Cognito::UserPoolClient *
+  #  * Referred docs for :  AWS Cloudformation - AWS::Cognito::UserPoolDomain *
+  #  * Referred docs for :  AWS Cloudformation - AWS::Cognito::UserPoolUser *
+  #  * Referred docs for :  AWS Cloudformation - AWS::Cognito::UserPoolGroup *
+  #  * Referred docs for :  AWS::Cognito::UserPoolUserToGroupAttachment *
+  #  * Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/AWS_Cognito.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  StoreManagementUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      AliasAttributes:
+        - email
+        - preferred_username
+      AutoVerifiedAttributes:
+        - email
+      LambdaConfig:
+        PostConfirmation: !GetAtt PostConfirmationLambdaTrigger.Arn
+      MfaConfiguration: "OFF"
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 15
+          RequireLowercase: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 1
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: false
+          Required: true
+      UserPoolName: store-management-user-pool
+      UsernameConfiguration:
+        CaseSensitive: false
+
+  StoreManagementUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref StoreManagementUserPool
+      ClientName: store-management-user-pool-client
+      GenerateSecret: true
+      RefreshTokenValidity: 30
+      AllowedOAuthFlows:
+        - implicit
+      CallbackURLs:
+        - http://localhost:8000
+      AllowedOAuthScopes:
+        - phone
+        - email
+        - openid
+        - profile
+        - aws.cognito.signin.user.admin
+      AllowedOAuthFlowsUserPoolClient: true
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders:
+        - COGNITO
+
+  StoreManagementAdminUsers:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: store-management-admins
+      UserPoolId: !Ref StoreManagementUserPool
+
+  StoreManagementNonAdminUsers:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: customers
+      UserPoolId: !Ref StoreManagementUserPool
+
+  StoreManagementUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: csci5401-store-management-user-pool-domain
+      UserPoolId: !Ref StoreManagementUserPool
+
+  StoreManagementUserPoolAdminUser:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      DesiredDeliveryMediums:
+        - EMAIL
+      UserAttributes:
+        - Name: email
+          Value: !Ref DefaultAdminEmailAddress
+        - Name: preferred_username
+          Value: !Ref DefaultAdminPreferredUsername
+        - Name: email_verified
+          Value: true
+      Username: !Ref DefaultAdminUsername
+      UserPoolId: !Ref StoreManagementUserPool
+
+  StoreManagementUserPoolAdminUserToAdminGroupMapping:
+    Type: AWS::Cognito::UserPoolUserToGroupAttachment
+    Properties:
+      GroupName: !Ref StoreManagementAdminUsers
+      Username: !Ref StoreManagementUserPoolAdminUser
+      UserPoolId: !Ref StoreManagementUserPool
+
+  #  ------------------------------- Cognito Ends ----------------------------------
+
+# ---------------------------------- SES ----------------------------------
+
+  # /***************************************************************************************
+  #  * AWS Cloudformation Documentation *
+  #  * Referred from :  AWS Cloudformation - SES Email Identity *
+  #  * Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ses-emailidentity.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  StoreManagementUserPoolAdminUserEmailIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      ConfigurationSetAttributes:
+        ConfigurationSetName: !Ref SESConfigSet
+      EmailIdentity: !Ref DefaultAdminEmailAddress
+
+  SESEmailIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref EmailNotifcationsFromAddress
+
+  # /***************************************************************************************
+  #  * AWS Cloudformation Documentation *
+  #  * Referred from :  AWS Cloudformation - SES Configuration set *
+  #  * Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ses-configurationset.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  SESConfigSet:
+    Type: AWS::SES::ConfigurationSet
+    Properties:
+      Name: ses-config-1
+
+  #  ------------------------------- SES Ends ----------------------------------
+
+  #  ------------------------------- API Gateway ----------------------------------
+
+  StoreManagementApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: StoreManagement
+      Description: StoreManagement
+
+  AdminResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      PathPart: admin
+      ParentId:
+        Fn::GetAtt:
+          - StoreManagementApi
+          - RootResourceId
+
+  AddProductResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      PathPart: addProduct
+      ParentId: !Ref AdminResource
+
+  CreateAdminUserResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      PathPart: createAdminUser
+      ParentId: !Ref AdminResource
+
+  DeleteProductResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      PathPart: deleteProduct
+      ParentId: !Ref AdminResource
+
+  SetupDatabaseLambdaResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      PathPart: setupDatabase
+      ParentId: !Ref AdminResource
+
+  UpdateOrderResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      PathPart: updateOrder
+      ParentId:  !Ref AdminResource
+
+  UpdateProductResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      PathPart: updateProduct
+      ParentId: !Ref AdminResource
+
+  GetOrderDetailsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      PathPart: getOrderDetails
+      ParentId:
+        Fn::GetAtt:
+          - StoreManagementApi
+          - RootResourceId
+
+  GetProductDetailsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      PathPart: getProductDetails
+      ParentId:
+        Fn::GetAtt:
+          - StoreManagementApi
+          - RootResourceId
+
+  PlaceOrderResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      PathPart: placeOrder
+      ParentId:
+        Fn::GetAtt:
+          - StoreManagementApi
+          - RootResourceId
+
+  ViewAllProductsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      PathPart: viewAllProducts
+      ParentId:
+        Fn::GetAtt:
+          - StoreManagementApi
+          - RootResourceId
+
+  ViewMyOrdersResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      PathPart: viewMyOrders
+      ParentId:
+        Fn::GetAtt:
+          - StoreManagementApi
+          - RootResourceId
+
+  StoreManagementDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - AddProductMethod
+      - CreateAdminUserMethod
+      - DeleteProductMethod
+      - SetupDatabaseLambdaMethod
+      - UpdateOrderMethod
+      - UpdateProductMethod
+      - GetProductDetailsMethod
+      - GetOrderDetailsMethod
+      - PlaceOrderMethod
+      - ViewAllProductsMethod
+      - ViewMyOrdersMethod
+    Properties:
+      RestApiId: !Ref StoreManagementApi
+      StageName: "test"
+
+  AddProductMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref StoreManagementAuthorizer
+      HttpMethod: POST
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+      Integration:
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+        Type: AWS
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt ExecuteStepFunctionLambda.Arn
+        RequestTemplates:
+          "application/json": !Sub
+            - "#set($allParams = $input.params())
+               {
+               \"body\" : $input.json('$'),
+               \"params\" : {
+               #foreach($type in $allParams.keySet())
+                   #set($params = $allParams.get($type))
+               \"$type\" : {
+                   #foreach($paramName in $params.keySet())
+                   \"$paramName\" : \"$util.escapeJavaScript($params.get($paramName))\"
+                       #if($foreach.hasNext),#end
+                   #end
+               }
+                   #if($foreach.hasNext),#end
+               #end
+               },
+               \"lambda-cognito-authorizer\" : {
+               #foreach($key in $context.authorizer.keySet())
+               \"$key\" : \"$util.escapeJavaScript($context.authorizer.get($key))\"
+                    #if($foreach.hasNext),#end
+               #end
+               },
+                \"stepFnARn\" : \"${AddProductStateMachineArn}\"
+                }"
+            - AddProductStateMachineArn: !GetAtt AddProductStateMachine.Arn
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: ''
+      RequestParameters:
+        method.request.querystring.name: true
+      ResourceId: !Ref AddProductResource
+      RestApiId: !Ref StoreManagementApi
+
+  CreateAdminUserMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref StoreManagementAuthorizer
+      HttpMethod: POST
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+      Integration:
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+        Type: AWS
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt ExecuteStepFunctionLambda.Arn
+        RequestTemplates:
+          "application/json": !Sub
+            - "#set($allParams = $input.params())
+               {
+               \"body\" : $input.json('$'),
+               \"params\" : {
+               #foreach($type in $allParams.keySet())
+                   #set($params = $allParams.get($type))
+               \"$type\" : {
+                   #foreach($paramName in $params.keySet())
+                   \"$paramName\" : \"$util.escapeJavaScript($params.get($paramName))\"
+                       #if($foreach.hasNext),#end
+                   #end
+               }
+                   #if($foreach.hasNext),#end
+               #end
+               },
+               \"lambda-cognito-authorizer\" : {
+               #foreach($key in $context.authorizer.keySet())
+               \"$key\" : \"$util.escapeJavaScript($context.authorizer.get($key))\"
+                    #if($foreach.hasNext),#end
+               #end
+               },
+                \"stepFnARn\" : \"${CreateAdminUserStateMachineArn}\"
+                }"
+            - CreateAdminUserStateMachineArn: !GetAtt CreateAdminUserStateMachine.Arn
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: ''
+      RequestParameters:
+        method.request.querystring.name: true
+      ResourceId: !Ref CreateAdminUserResource
+      RestApiId: !Ref StoreManagementApi
+
+  DeleteProductMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref StoreManagementAuthorizer
+      HttpMethod: POST
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+      Integration:
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+        Type: AWS
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt ExecuteStepFunctionLambda.Arn
+        RequestTemplates:
+          "application/json": !Sub
+            - "#set($allParams = $input.params())
+               {
+               \"body\" : $input.json('$'),
+               \"params\" : {
+               #foreach($type in $allParams.keySet())
+                   #set($params = $allParams.get($type))
+               \"$type\" : {
+                   #foreach($paramName in $params.keySet())
+                   \"$paramName\" : \"$util.escapeJavaScript($params.get($paramName))\"
+                       #if($foreach.hasNext),#end
+                   #end
+               }
+                   #if($foreach.hasNext),#end
+               #end
+               },
+               \"lambda-cognito-authorizer\" : {
+               #foreach($key in $context.authorizer.keySet())
+               \"$key\" : \"$util.escapeJavaScript($context.authorizer.get($key))\"
+                    #if($foreach.hasNext),#end
+               #end
+               },
+                \"stepFnARn\" : \"${DeleteProductStateMachineArn}\"
+                }"
+            - DeleteProductStateMachineArn: !GetAtt DeleteProductStateMachine.Arn
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: ''
+      RequestParameters:
+        method.request.querystring.name: true
+      ResourceId: !Ref DeleteProductResource
+      RestApiId: !Ref StoreManagementApi
+
+  SetupDatabaseLambdaMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref StoreManagementAuthorizer
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt SetupDatabaseLambda.Arn
+      ResourceId: !Ref SetupDatabaseLambdaResource
+      RestApiId: !Ref StoreManagementApi
+
+  UpdateOrderMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref StoreManagementAuthorizer
+      HttpMethod: POST
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+      Integration:
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+        Type: AWS
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt ExecuteStepFunctionLambda.Arn
+        RequestTemplates:
+          "application/json": !Sub
+            - "#set($allParams = $input.params())
+               {
+               \"body\" : $input.json('$'),
+               \"params\" : {
+               #foreach($type in $allParams.keySet())
+                   #set($params = $allParams.get($type))
+               \"$type\" : {
+                   #foreach($paramName in $params.keySet())
+                   \"$paramName\" : \"$util.escapeJavaScript($params.get($paramName))\"
+                       #if($foreach.hasNext),#end
+                   #end
+               }
+                   #if($foreach.hasNext),#end
+               #end
+               },
+               \"lambda-cognito-authorizer\" : {
+               #foreach($key in $context.authorizer.keySet())
+               \"$key\" : \"$util.escapeJavaScript($context.authorizer.get($key))\"
+                    #if($foreach.hasNext),#end
+               #end
+               },
+                \"stepFnARn\" : \"${UpdateOrderStateMachineArn}\"
+                }"
+            - UpdateOrderStateMachineArn: !GetAtt UpdateOrderStateMachine.Arn
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: ''
+      RequestParameters:
+        method.request.querystring.name: true
+      ResourceId: !Ref UpdateOrderResource
+      RestApiId: !Ref StoreManagementApi
+
+  UpdateProductMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref StoreManagementAuthorizer
+      HttpMethod: POST
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+      Integration:
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+        Type: AWS
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt ExecuteStepFunctionLambda.Arn
+        RequestTemplates:
+          "application/json": !Sub
+            - "#set($allParams = $input.params())
+               {
+               \"body\" : $input.json('$'),
+               \"params\" : {
+               #foreach($type in $allParams.keySet())
+                   #set($params = $allParams.get($type))
+               \"$type\" : {
+                   #foreach($paramName in $params.keySet())
+                   \"$paramName\" : \"$util.escapeJavaScript($params.get($paramName))\"
+                       #if($foreach.hasNext),#end
+                   #end
+               }
+                   #if($foreach.hasNext),#end
+               #end
+               },
+               \"lambda-cognito-authorizer\" : {
+               #foreach($key in $context.authorizer.keySet())
+               \"$key\" : \"$util.escapeJavaScript($context.authorizer.get($key))\"
+                    #if($foreach.hasNext),#end
+               #end
+               },
+                \"stepFnARn\" : \"${UpdateProductStateMachineArn}\"
+                }"
+            - UpdateProductStateMachineArn: !GetAtt UpdateProductStateMachine.Arn
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: ''
+      RequestParameters:
+        method.request.querystring.name: true
+      ResourceId: !Ref UpdateProductResource
+      RestApiId: !Ref StoreManagementApi
+
+  GetOrderDetailsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref StoreManagementAuthorizer
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt GetOrderDetailsFunction.Arn
+      ResourceId: !Ref GetOrderDetailsResource
+      RestApiId: !Ref StoreManagementApi
+
+  GetProductDetailsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref StoreManagementAuthorizer
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt GetProductDetailsFunction.Arn
+      ResourceId: !Ref GetProductDetailsResource
+      RestApiId: !Ref StoreManagementApi
+
+  PlaceOrderMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref StoreManagementAuthorizer
+      HttpMethod: POST
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+      Integration:
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+        Type: AWS
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt ExecuteStepFunctionLambda.Arn
+        RequestTemplates:
+          "application/json": !Sub
+            - "#set($allParams = $input.params())
+               {
+               \"body\" : $input.json('$'),
+               \"params\" : {
+               #foreach($type in $allParams.keySet())
+                   #set($params = $allParams.get($type))
+               \"$type\" : {
+                   #foreach($paramName in $params.keySet())
+                   \"$paramName\" : \"$util.escapeJavaScript($params.get($paramName))\"
+                       #if($foreach.hasNext),#end
+                   #end
+               }
+                   #if($foreach.hasNext),#end
+               #end
+               },
+               \"lambda-cognito-authorizer\" : {
+               #foreach($key in $context.authorizer.keySet())
+               \"$key\" : \"$util.escapeJavaScript($context.authorizer.get($key))\"
+                    #if($foreach.hasNext),#end
+               #end
+               },
+                \"stepFnARn\" : \"${PlaceOrderStateMachineArn}\"
+                }"
+            - PlaceOrderStateMachineArn: !GetAtt PlaceOrderStateMachine.Arn
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: ''
+      RequestParameters:
+        method.request.querystring.name: true
+      ResourceId: !Ref PlaceOrderResource
+      RestApiId: !Ref StoreManagementApi
+
+  ViewAllProductsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref StoreManagementAuthorizer
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt ViewAllProductsFunction.Arn
+      ResourceId: !Ref ViewAllProductsResource
+      RestApiId: !Ref StoreManagementApi
+
+  ViewMyOrdersMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref StoreManagementAuthorizer
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt ViewMyOrdersFunction.Arn
+      ResourceId: !Ref ViewMyOrdersResource
+      RestApiId: !Ref StoreManagementApi
+
+  StoreManagementAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      AuthorizerResultTtlInSeconds: 0
+      AuthorizerUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${StoreManagementLambdaAuthorizer.Arn}/invocations"
+      Name: CognitoLambdaAuthorizer
+      RestApiId: !Ref StoreManagementApi
+      Type: "REQUEST"
+      IdentitySource: method.request.header.Authorization
+
+  #------------------------------------------------ API Gateway Ends -----------------------------------------------
+
+  #------------------------------------------------ SQS -----------------------------------------------
+
+  # /***************************************************************************************
+  #  * AWS Cloudformation Documentation *
+  #  * Referred from :  AWS Cloudformation - SQS queue *
+  #  * Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-sqs-queue.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  MailQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: MailQueue
+
+  #------------------------------------------------ SQS Ends -----------------------------------------------
+
+  #------------------------------------------------ Lambda Functions -----------------------------------------------
+
+  # /***************************************************************************************
+  #  * AWS Cloudformation Documentation *
+  #  * Referred from :  AWS Cloudformation - Lambda function invoke permission *
+  #  * Availability:https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-permission.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  StoreManagementAuthorizerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt StoreManagementLambdaAuthorizer.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${StoreManagementApi}/authorizers/${StoreManagementAuthorizer}"
+
+  UserPoolLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:invokeFunction
+      Principal: cognito-idp.amazonaws.com
+      FunctionName: customer-signup-post-confirmation
+      SourceArn: !GetAtt StoreManagementUserPool.Arn
+
+  # /***************************************************************************************
+  #  * AWS Cloudformation Documentation *
+  #  * Referred from :  AWS Cloudformation - Lambda functions *
+  #  * Availability:https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-function.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  StoreManagementLambdaAuthorizer:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt BasicLambdaExecuteRole.Arn
+      Handler: cognito_lambda_authorizer.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: cognito_lambda_authorizer.zip
+      Layers:
+        - !Ref PyjwtPythonjoseCognitojwtJwcryptoRequestsLayer
+      Description: Lambda authorizer to validate cognito user token and delegate role based access to APIs - restrict customers to access admin APIs
+      FunctionName: cognito-lambda-authorizer
+      Environment:
+        Variables:
+          COGNITO_USER_POOL_REGION:
+            !Ref "AWS::Region"
+          COGNITO_USER_POOL_ID:
+            !Ref StoreManagementUserPool
+          COGNITO_USER_POOL_APP_CLIENT_ID:
+            !Ref StoreManagementUserPoolClient
+          COGNITO_ADMIN_GROUP_NAME:
+            !Ref StoreManagementAdminUsers
+
+  PostConfirmationLambdaTrigger:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt BasicLambdaCognitoAddUserToGroupAndSESVerifyEmailIdentityRole.Arn
+      Handler: customer_signup_post_confirmation.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: customer_signup_post_confirmation.zip
+      Layers:
+        - !Ref boto3layer
+      Description: Add created users to customers group on sign up confirmation (email verification is done). Also add the created user email address as SES email identity in order to send email notifications.
+      FunctionName: customer-signup-post-confirmation
+
+  ExecuteStepFunctionLambda:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - AddProductStateMachine
+      - DeleteProductStateMachine
+      - UpdateProductStateMachine
+      - PlaceOrderStateMachine
+      - UpdateOrderStateMachine
+      - CreateAdminUserStateMachine
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt BasicLambdaAndStepFnExecuteDescribeRole.Arn
+      Handler: execute_state_machine_function.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: execute_state_machine_function.zip
+      Layers:
+        - !Ref boto3layer
+      Description: Invoke step function to add product and get it's response after timeout.
+      FunctionName: execute-state-machine-function
+      Timeout: 60
+
+  AddProductToDBFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: add_product_to_db.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: add_product_to_db.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Add product to MySQL DB
+      FunctionName: add-product-to-db
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  CheckIfProductExistsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: check_if_product_exists.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: check_if_product_exists.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Check if the product already exists.
+      FunctionName: check-if-product-exists
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  GetAdminMailAddresses:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt BasicLambdaAndCognitoListUsersRole.Arn
+      Handler: get_admin_mail_addresses.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: get_admin_mail_addresses.zip
+      Layers:
+        - !Ref boto3layer
+      Description: Get all admin email address to notify about an action
+      FunctionName: get-admin-mail-addresses
+      Environment:
+        Variables:
+          USER_POOL_ID:
+            !Ref StoreManagementUserPool
+          ADMIN_GROUP:
+            !Ref StoreManagementAdminUsers
+
+  SendMailLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt SendMailLambdaIamRole.Arn
+      Handler: send_mail.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: send_mail.zip
+      Layers:
+        - !Ref boto3layer
+      Description: Triggered by sqs to send mail
+      FunctionName: send-mail
+      Environment:
+        Variables:
+          SES_CONFIG_NAME:
+            Ref: SESConfigSet
+          FROM_EMAIL_ID:
+            Ref: EmailNotifcationsFromAddress
+
+  MailQueueSendMailLambdaTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      Enabled: true
+      EventSourceArn: !GetAtt MailQueue.Arn
+      FunctionName: !Ref SendMailLambda
+
+  CreateCognitoUserFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt BasicLambdaAndCognitoAdminCreateUserRole.Arn
+      Handler: create_cognito_user.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: create_cognito_user.zip
+      Layers:
+        - !Ref boto3layer
+      Description: Create admin users - this can be done only by admin users. Also add the created user email address as SES email identity in order to send email notifications.
+      FunctionName: create-cognito-user
+      Environment:
+        Variables:
+          USER_POOL_ID:
+            Ref: StoreManagementUserPool
+
+  AddUserToAdminGroupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt BasicLambdaAndCognitoAdminAddUserToGroupRole.Arn
+      Handler: add_to_cognito_group.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: add_to_cognito_group.zip
+      Layers:
+        - !Ref boto3layer
+      Description: Create admin users - this can be done only by admin users. Also add the created user email address as SES email identity in order to send email notifications.
+      FunctionName: add-to-cognito-group
+      Environment:
+        Variables:
+          USER_POOL_ID:
+            Ref: StoreManagementUserPool
+          COGNITO_ADMIN_GROUP_NAME:
+            !Ref StoreManagementAdminUsers
+
+  AddUserAsSESIdentityFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt BasicLambdaAndSESVerifyEmailRole.Arn
+      Handler: add_user_as_ses_identity.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: add_user_as_ses_identity.zip
+      Layers:
+        - !Ref boto3layer
+      Description: Create admin users - this can be done only by admin users. Also add the created user email address as SES email identity in order to send email notifications.
+      FunctionName: add-user-as-ses-identity
+
+  DeleteProductFromDBFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: delete_product_from_db.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: delete_product_from_db.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Add product to MySQL DB
+      FunctionName: delete-product-from-db
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  SetupDatabaseLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: setup_database.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: setup_database.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Triggered by sqs to send mail
+      FunctionName: setup-database
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  UpdateOrderStatusFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: update_order_status.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: update_order_status.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Update order completion status
+      FunctionName: update-order-status
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  UpdatePickupDetailsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: update_pickup_details.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: update_pickup_details.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Update order pickup details
+      FunctionName: update-pickup-details
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  CheckIfProductIdExistsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: check_if_product_id_exists.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: check_if_product_id_exists.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Check if the product already exists using id for update api.
+      FunctionName: check-if-product-id-exists
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  UpdateProductPriceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: update_product_price.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: update_product_price.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Add product to MySQL DB
+      FunctionName: update-product-price
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  UpdateProductCountFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: update_product_count.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: update_product_count.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Add product to MySQL DB
+      FunctionName: update-product-count
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  GetProductDetailsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: get_product_details.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: get_product_details.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Get product details
+      FunctionName: get-product-details
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  CheckProductAvailabilityFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: check_product_availability.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: check_product_availability.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Check product availability before placing order
+      FunctionName: check-product-availability
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  PlaceOrderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: place_order.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: place_order.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Create order entry
+      FunctionName: place-order
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  CreateProductMappingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: create_product_mapping.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: create_product_mapping.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Create order-product mapping
+      FunctionName: create-product-mapping
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  GetOrderDetailsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSAndListCognitoUserDetailsLambdaIamRole.Arn
+      Handler: get_order_details.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: get_order_details.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Get order details to send mail and display.
+      FunctionName: get-order-details
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+          COGNITO_USER_POOL_ID:
+            !Ref StoreManagementUserPool
+
+  ViewAllProductsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: view_all_products.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: view_all_products.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: View all product details
+      FunctionName: view-all-products
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  ViewMyOrdersFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt ConnectToRDSLambdaIamRole.Arn
+      Handler: view_my_orders.handler
+      Code:
+        S3Bucket: term-ass
+        S3Key: view_my_orders.zip
+      Layers:
+        - !Ref boto3layer
+        - !Ref PyMySqlLayer
+      Description: Get order details to send mail and display.
+      FunctionName: view-my-orders
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ConnectToRDSLambdaSecurityGroup
+        SubnetIds:
+          - !Ref StoreManagementPrivateSubnet1
+          - !Ref StoreManagementPrivateSubnet2
+      Environment:
+        Variables:
+          MYSQL_SECRET: !Ref StorageManagementMySQLCredentials
+
+  # -------------------------------- Lambda function Ends -----------------------------
+
+  # -------------------------------- Step function  -----------------------------
+
+  # /***************************************************************************************
+  #  * AWS Cloudformation Documentation *
+  #  * Referred from :  AWS Cloudformation - State Machine *
+  #  * Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-stepfunctions-statemachine.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  AddProductStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn:
+      - AddProductToDBFunction
+      - CheckIfProductExistsFunction
+      - GetAdminMailAddresses
+    Properties:
+      DefinitionS3Location:
+        Bucket: term-ass
+        Key: add_product.json
+      RoleArn: !GetAtt [ StateMachineLambdaInvocationRole, Arn ]
+
+  CreateAdminUserStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn:
+      - CreateCognitoUserFunction
+      - AddUserToAdminGroupFunction
+      - AddUserAsSESIdentityFunction
+    Properties:
+      DefinitionS3Location:
+        Bucket: term-ass
+        Key: create_admin_user.json
+      RoleArn: !GetAtt [ StateMachineLambdaInvocationRole, Arn ]
+
+  DeleteProductStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn:
+      - DeleteProductFromDBFunction
+      - CheckIfProductExistsFunction
+      - GetAdminMailAddresses
+    Properties:
+      DefinitionS3Location:
+        Bucket: term-ass
+        Key: delete_product.json
+      RoleArn: !GetAtt [ StateMachineLambdaInvocationRole, Arn ]
+
+  UpdateOrderStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn:
+      - UpdatePickupDetailsFunction
+      - UpdateOrderStatusFunction
+      - GetOrderDetailsFunction
+    Properties:
+      DefinitionS3Location:
+        Bucket: term-ass
+        Key: update_order.json
+      RoleArn: !GetAtt [ StateMachineLambdaInvocationRole, Arn ]
+
+  UpdateProductStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn:
+      - CheckIfProductIdExistsFunction
+      - UpdateProductPriceFunction
+      - UpdateProductCountFunction
+      - GetAdminMailAddresses
+    Properties:
+      DefinitionS3Location:
+        Bucket: term-ass
+        Key: update_product.json
+      RoleArn: !GetAtt [ StateMachineLambdaInvocationRole, Arn ]
+
+  PlaceOrderStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn:
+      - CheckProductAvailabilityFunction
+      - PlaceOrderFunction
+      - CreateProductMappingFunction
+      - GetOrderDetailsFunction
+    Properties:
+      DefinitionS3Location:
+        Bucket: term-ass
+        Key: place_order.json
+      RoleArn: !GetAtt [ StateMachineLambdaInvocationRole, Arn ]
+
+  # -------------------------------- Step function Ends -----------------------------
+
+  # --------------------------------IAM Roles -----------------------------
+
+  # /***************************************************************************************
+  #  * AWS Cloudformation IAM Role *
+  #  * Referred from :  AWS Cloudformation - IAM Role *
+  #  * Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-role.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  ApiGatewayIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: 'Allow'
+            Principal:
+              Service:
+                - 'apigateway.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: LambdaAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action: 'lambda:*'
+                Resource: '*'
+
+  BasicLambdaExecuteRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+
+  SendMailLambdaIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - ses:SendEmail
+                  - ses:SendTemplatedEmail
+                  - ses:SendRawEmail
+                  - ses:SendBulkTemplatedEmail
+                Effect: Allow
+                Resource: "*"
+          PolicyName: SendMailLambdaPolicy
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - sqs:ReceiveMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:DeleteMessage
+                Effect: Allow
+                Resource: "*"
+          PolicyName: SendMailLambdaSQSPolicy
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+
+  ConnectToRDSLambdaIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - secretsmanager:GetSecretValue
+                  - kms:Decrypt
+                Effect: Allow
+                Resource: "*"
+          PolicyName: ConnectToRDSLambdaSecretKeyPolicy
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+
+  ConnectToRDSAndListCognitoUserDetailsLambdaIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - secretsmanager:GetSecretValue
+                  - kms:Decrypt
+                Effect: Allow
+                Resource: "*"
+          PolicyName: ConnectToRDSLambdaSecretKeyPolicy
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - cognito-idp:ListUsers
+                Effect: Allow
+                Resource: "*"
+          PolicyName: LambdaCognitoListUserPolicy
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+
+  BasicLambdaCognitoAddUserToGroupAndSESVerifyEmailIdentityRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - cognito-idp:AdminAddUserToGroup
+                Effect: Allow
+                Resource: "*"
+          PolicyName: CognitoAdminAddUserToGroup
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - ses:VerifyEmailIdentity
+                Effect: Allow
+                Resource: "*"
+          PolicyName: SesVerifyEmailIdentity
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+
+  BasicLambdaAndCognitoAdminCreateUserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - cognito-idp:AdminCreateUser
+                Effect: Allow
+                Resource: "*"
+          PolicyName: CognitoCreateUser
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+
+  BasicLambdaAndCognitoAdminAddUserToGroupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - cognito-idp:AdminAddUserToGroup
+                Effect: Allow
+                Resource: "*"
+          PolicyName: CognitoAddUserToGroup
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+
+  BasicLambdaAndSESVerifyEmailRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - ses:VerifyEmailIdentity
+                Effect: Allow
+                Resource: "*"
+          PolicyName: SesVerifyEmailIdentity
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+
+  BasicLambdaAndCognitoListUsersRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - cognito-idp:ListUsersInGroup
+                Effect: Allow
+                Resource: "*"
+          PolicyName: CognitoListUsersPolicy
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+
+  BasicLambdaAndStepFnExecuteDescribeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - states:StartExecution
+                  - states:DescribeExecution
+                Effect: Allow
+                Resource: "*"
+          PolicyName: StepFnExecuteAndDescribePolicy
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+
+  StateMachineLambdaInvocationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - !Sub states.${AWS::Region}.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: StatesExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "lambda:InvokeFunction"
+                  - "sqs:SendMessage"
+                Resource: "*"
+
+  # -------------------------------- IAM Roles Ends -----------------------------
+
+  # --------------------------------Lambda Layers -----------------------------
+
+  # /***************************************************************************************
+  #  * AWS Cloudformation Documentation *
+  #  * Referred from :  AWS Cloudformation - Lambda layer *
+  #  * Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-layerversion.html *
+  #  * Accessed: 11th April, 2023
+  #  * **************************************************************************************/
+
+  boto3layer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleArchitectures:
+        - arm64
+        - x86_64
+      CompatibleRuntimes:
+        - python3.9
+      Content:
+        S3Bucket: term-ass
+        S3Key: boto3_layer.zip
+      LayerName: boto3_dependency
+
+  PyjwtPythonjoseCognitojwtJwcryptoRequestsLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleArchitectures:
+        - arm64
+        - x86_64
+      CompatibleRuntimes:
+        - python3.9
+      Content:
+        S3Bucket: term-ass
+        S3Key: cognito_lambda_authorizer_layer.zip
+      LayerName: pyjwt_python_jose_cognitojwt_jwcrypto_requests_dependency
+
+  PyMySqlLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleArchitectures:
+        - arm64
+        - x86_64
+      CompatibleRuntimes:
+        - python3.9
+      Content:
+        S3Bucket: term-ass
+        S3Key: PyMySql.zip
+      LayerName: pymysql_dependency
+
+  # --------------------------------Lambda Layers Ends -----------------------------
